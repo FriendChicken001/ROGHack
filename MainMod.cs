@@ -22,7 +22,7 @@ namespace ROCSpeedHack
         public static bool logButtonClicks = false;
         private static bool showRunSpeed = true;
         private string lastSceneName = string.Empty;
-        private static Rect windowRect = new Rect(20, 20, 260, 0);
+        private static Rect windowRect = new Rect(20, 44, 260, 0);
         private static GUIStyle espStyle;
         private static string runSpeedInput = runSpeed.ToString("0.0");
         private static string autoBuyItemId = "";
@@ -121,6 +121,111 @@ namespace ROCSpeedHack
             ("Poison Bottle", 2020005),
             ("Blue Gemstone", 2020002),
         };
+        // Auto-Buy Favorited Trade Cards: buys every card the player has "Follow"-starred in
+        // the Trade tab (Sweater/Trade panel), either on demand or automatically around the
+        // market's known refresh times (12:05/16:05/20:05). Real API found via decompiling
+        // ModuleMgr/TradeMgr.lua and UI/Trade/TradeHandler.lua: the favorited/"pre-buy" list is
+        // ModuleData.TradeData.GetPreBuyList() (items with info.isFollow == true), and the real
+        // buy call is TradeMgr.SendTradeBuyItemReq(notice, id, count, force, totalCost) - a plain
+        // module function (dot syntax, no self), matching what TradeHandler.lua itself calls.
+        private static bool tradeFavAutoBuyEnabled = false;
+        private static string tradeFavBuyQty = "1";
+        private static string tradeFavStatus = "";
+        private static readonly System.TimeSpan[] TradeRefreshTimes = new System.TimeSpan[]
+        {
+            new System.TimeSpan(12, 5, 0),
+            new System.TimeSpan(16, 5, 0),
+            new System.TimeSpan(20, 5, 0),
+        };
+        // Stock at each refresh is limited and shared with every other player watching the same
+        // slot, so a single request right at 12:05:00 easily loses a race to someone else's
+        // client. Instead, start burst-firing a few seconds BEFORE the scheduled time (covers
+        // clock skew/latency - requests that land before the server actually refreshes just fail
+        // harmlessly) and keep firing for a while after it (server-authoritative either way).
+        private const float TradeFavBurstLeadSeconds = 5f;
+        private const float TradeFavBurstTrailSeconds = 20f;
+        private const float TradeFavBurstIntervalSeconds = 1f;
+        private static System.DateTime tradeFavLastFiredSlot = System.DateTime.MinValue;
+        private static float tradeFavBurstEndTime = -1f;
+        private static float tradeFavNextBurstAttemptTime = 0f;
+
+        private void CheckTradeFavoriteAutoBuySchedule()
+        {
+            if (!tradeFavAutoBuyEnabled)
+            {
+                return;
+            }
+
+            if (Time.time < tradeFavBurstEndTime)
+            {
+                if (Time.time >= tradeFavNextBurstAttemptTime)
+                {
+                    tradeFavNextBurstAttemptTime = Time.time + TradeFavBurstIntervalSeconds;
+                    BuyFavoritedTradeCards();
+                }
+                return;
+            }
+
+            System.DateTime now = System.DateTime.Now;
+            foreach (System.TimeSpan slot in TradeRefreshTimes)
+            {
+                System.DateTime slotToday = now.Date + slot;
+                double secondsUntilSlot = (slotToday - now).TotalSeconds;
+
+                if (secondsUntilSlot <= TradeFavBurstLeadSeconds && secondsUntilSlot > -TradeFavBurstTrailSeconds)
+                {
+                    if (slotToday != tradeFavLastFiredSlot)
+                    {
+                        tradeFavLastFiredSlot = slotToday;
+                        tradeFavBurstEndTime = Time.time + (float)secondsUntilSlot + TradeFavBurstTrailSeconds;
+                        tradeFavNextBurstAttemptTime = 0f;
+                    }
+                    break;
+                }
+            }
+        }
+
+        private void BuyFavoritedTradeCards()
+        {
+            int qty = int.TryParse(tradeFavBuyQty, out int q) && q > 0 ? q : 1;
+            const string debugFile = "ROGHack_tradebuy.txt";
+            string script =
+                "local f = io.open('" + debugFile + "', 'w')\n" +
+                "local ui = UIMgr:GetUI('Sweater')\n" +
+                "local trade = ui and ui.handlers and ui.handlers.Trade\n" +
+                "if trade == nil or not trade.isInited then\n" +
+                "  f:write('ERROR: Trade panel not initialized - open Sweater/Trade at least once this session\\n')\n" +
+                "else\n" +
+                "  local list = trade.tradeData.GetPreBuyList()\n" +
+                "  local n = 0\n" +
+                "  for i = 1, #list do\n" +
+                "    local id = list[i].id\n" +
+                "    local info = trade.tradeData.GetTradeInfo(id)\n" +
+                "    if info and info.isFollow then\n" +
+                "      local price = math.floor((info.curPrice or 0) + 0.5)\n" +
+                "      trade.tradeMgr.SendTradeBuyItemReq(info.isNotice or false, id, " + qty + ", false, price)\n" +
+                "      f:write('requested id=' .. tostring(id) .. ' qty=" + qty + " price=' .. tostring(price) .. '\\n')\n" +
+                "      n = n + 1\n" +
+                "    end\n" +
+                "  end\n" +
+                "  f:write('total requested=' .. tostring(n) .. '\\n')\n" +
+                "end\n" +
+                "f:close()\n";
+
+            File.WriteAllText(debugFile, "");
+            MLuaClientHelper.DoLuaString(script);
+
+            if (File.Exists(debugFile))
+            {
+                string[] lines = File.ReadAllLines(debugFile);
+                tradeFavStatus = lines.Length > 0 ? lines[lines.Length - 1] : "";
+                foreach (string line in lines)
+                {
+                    logger.Msg("[TradeFavBuy] " + line);
+                }
+            }
+        }
+
         private const string ConfigFileName = "ROGHack_config.txt";
 
         public override void OnInitializeMelon()
@@ -214,6 +319,8 @@ namespace ROCSpeedHack
                 UpdateFlywingLock();
             }
 
+            CheckTradeFavoriteAutoBuySchedule();
+
             /*
             if (Input.GetKeyDown(KeyCode.Z))
             {
@@ -260,13 +367,22 @@ namespace ROCSpeedHack
                 DrawEsp();
             }
 
+            // Always-visible toggle button (in addition to the Delete key) so the overlay can be
+            // reopened after being hidden without needing to remember/press the keybind.
+            Rect toggleButtonRect = new Rect(10, 10, 90, 24);
+            bool mouseOverToggle = toggleButtonRect.Contains(Event.current.mousePosition);
+            if (GUI.Button(toggleButtonRect, showRunSpeed ? "Hide ROGHack" : "Show ROGHack"))
+            {
+                showRunSpeed = !showRunSpeed;
+            }
+
             if (!showRunSpeed)
             {
-                isMouseOverModUI = false;
+                isMouseOverModUI = mouseOverToggle;
                 return;
             }
 
-            isMouseOverModUI = windowRect.Contains(Event.current.mousePosition);
+            isMouseOverModUI = windowRect.Contains(Event.current.mousePosition) || mouseOverToggle;
             windowRect = GUILayout.Window(20260729, windowRect, (System.Action<int>)DrawWindow, "ROGHack (Del to hide)");
         }
 
@@ -421,6 +537,23 @@ namespace ROCSpeedHack
             if (!string.IsNullOrEmpty(flywingLockStatus))
             {
                 GUILayout.Label(flywingLockStatus);
+            }
+
+            GUILayout.Space(8);
+            GUILayout.Label("Auto-Buy Favorited Trade Cards (Sweater/Trade 'Follow' list)");
+            GUILayout.Label("Open the Trade tab at least once this session first, and star (Follow) the cards you want.");
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Buy Qty", GUILayout.Width(60));
+            tradeFavBuyQty = GUILayout.TextField(tradeFavBuyQty);
+            GUILayout.EndHorizontal();
+            tradeFavAutoBuyEnabled = GUILayout.Toggle(tradeFavAutoBuyEnabled, "Auto-buy at refresh (12:05 / 16:05 / 20:05)");
+            if (GUILayout.Button("Buy Favorites Now"))
+            {
+                BuyFavoritedTradeCards();
+            }
+            if (!string.IsNullOrEmpty(tradeFavStatus))
+            {
+                GUILayout.Label(tradeFavStatus);
             }
 
             GUI.DragWindow(new Rect(0, 0, 10000, 20));
