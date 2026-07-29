@@ -29,6 +29,9 @@ namespace ROCSpeedHack
         private static string autoBuyMinCount = "";
         private static string autoBuyQty = "";
         private static bool showItemDropdown = false;
+        private static bool showMonsterDropdown = false;
+        private static System.Collections.Generic.List<string> mapMonsterNames = new System.Collections.Generic.List<string>();
+        private static int mapMonsterListSceneId = -1;
         private const int FlyWingsItemId = 2031003;
         // Populated live by HUDPatch in Patches.cs (a Harmony postfix on
         // MMonsterHUDComponent.IsTarget, which the game calls every frame per actually-visible
@@ -51,6 +54,55 @@ namespace ROCSpeedHack
                 }
             }
             return result;
+        }
+
+        // Real per-map monster list, sourced from MSceneMgr:GetMonsIdsBySceneId(sceneId) -
+        // the same API the game's own Map/MapInfor screen uses to populate its monster list
+        // panel (MapWindow.lua's showCurrentSceneMonsterInfoPanel/setMonsterInfo). Unlike
+        // liveMonsterSightings (a "seen" list built from visible HUDs), this reflects every
+        // monster species that can spawn on the current map, whether or not one is nearby
+        // right now. DoLuaString has no return value, so results are written to a temp file
+        // and read back immediately after the call returns (same pattern as DebugAutoBuy).
+        private static void RefreshMapMonsterList()
+        {
+            const string debugFile = "ROGHack_mapmonsters.txt";
+            string script =
+                "local f = io.open('" + debugFile + "', 'w')\n" +
+                "local sceneId = MScene.SceneID\n" +
+                "local ids = MSceneMgr:GetMonsIdsBySceneId(sceneId)\n" +
+                "local entityTable = TableUtil.GetEntityTable()\n" +
+                "f:write(tostring(sceneId) .. '\\n')\n" +
+                "for i = 0, ids.Count - 1 do\n" +
+                "  local row = entityTable.GetRowById(ids[i])\n" +
+                "  if row ~= nil then\n" +
+                "    f:write(tostring(row.Name) .. '\\n')\n" +
+                "  end\n" +
+                "end\n" +
+                "f:close()\n";
+
+            File.WriteAllText(debugFile, "");
+            MLuaClientHelper.DoLuaString(script);
+
+            if (!File.Exists(debugFile))
+            {
+                logger.Msg("[FlywingLock] Map monster list probe failed: debug file not created.");
+                return;
+            }
+
+            string[] lines = File.ReadAllLines(debugFile);
+            mapMonsterNames = new System.Collections.Generic.List<string>();
+            if (lines.Length > 0 && int.TryParse(lines[0], out int sceneId))
+            {
+                mapMonsterListSceneId = sceneId;
+                for (int i = 1; i < lines.Length; i++)
+                {
+                    if (!string.IsNullOrEmpty(lines[i]))
+                    {
+                        mapMonsterNames.Add(lines[i]);
+                    }
+                }
+            }
+            mapMonsterNames.Sort();
         }
 
         private static bool flywingLockEnabled = false;
@@ -316,7 +368,34 @@ namespace ROCSpeedHack
             GUILayout.BeginHorizontal();
             GUILayout.Label("Target name:", GUILayout.Width(80));
             flywingLockTargetName = GUILayout.TextField(flywingLockTargetName);
+            if (GUILayout.Button(showMonsterDropdown ? "▲" : "▼", GUILayout.Width(25)))
+            {
+                showMonsterDropdown = !showMonsterDropdown;
+                if (showMonsterDropdown)
+                {
+                    RefreshMapMonsterList();
+                }
+            }
             GUILayout.EndHorizontal();
+            if (showMonsterDropdown)
+            {
+                if (GUILayout.Button("Refresh (current map)"))
+                {
+                    RefreshMapMonsterList();
+                }
+                if (mapMonsterNames.Count == 0)
+                {
+                    GUILayout.Label("(no monsters found for this map)");
+                }
+                foreach (string name in mapMonsterNames)
+                {
+                    if (GUILayout.Button(name))
+                    {
+                        flywingLockTargetName = name;
+                        showMonsterDropdown = false;
+                    }
+                }
+            }
             GUILayout.BeginHorizontal();
             if (!flywingLockEnabled)
             {
