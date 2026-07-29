@@ -25,10 +25,6 @@ namespace ROCSpeedHack
         private static Rect windowRect = new Rect(20, 44, 260, 0);
         private static GUIStyle espStyle;
         private static string runSpeedInput = runSpeed.ToString("0.0");
-        private static string autoBuyItemId = "";
-        private static string autoBuyMinCount = "";
-        private static string autoBuyQty = "";
-        private static bool showItemDropdown = false;
         private static bool showMonsterDropdown = false;
         private static System.Collections.Generic.List<string> mapMonsterNames = new System.Collections.Generic.List<string>();
         private static int mapMonsterListSceneId = -1;
@@ -110,17 +106,6 @@ namespace ROCSpeedHack
         private static string flywingLockStatus = "";
         private static float flywingLockNextAttemptTime = 0f;
         private const float FlywingLockAttemptInterval = 1.5f;
-        private static readonly (string Name, int Id)[] KnownItems = new (string, int)[]
-        {
-            ("Red Potion", 2010001),
-            ("Orange Potion", 2010002),
-            ("White Potion", 2010003),
-            ("Blue Potion", 2010005),
-            ("Condensed Blue Potion", 2010015),
-            ("Panacea", 2010014),
-            ("Poison Bottle", 2020005),
-            ("Blue Gemstone", 2020002),
-        };
         // Auto-Buy Favorited Trade Cards: buys every card the player has "Follow"-starred in
         // the Trade tab (Sweater/Trade panel), either on demand or automatically around the
         // market's known refresh times (12:05/16:05/20:05). Real API found via decompiling
@@ -189,27 +174,28 @@ namespace ROCSpeedHack
         {
             int qty = int.TryParse(tradeFavBuyQty, out int q) && q > 0 ? q : 1;
             const string debugFile = "ROGHack_tradebuy.txt";
+            // ModuleData.TradeData / MgrMgr:GetMgr('TradeMgr') are global modules, independent of
+            // the Sweater/Trade UI panel - confirmed live that GetPreBuyList() still returns the
+            // player's followed items and SendTradeBuyItemReq still works after the Trade panel
+            // has been fully closed (UIMgr:GetUI('Sweater') goes nil on close, but this data
+            // survives that). So no UI panel needs to be open at all for this to work.
             string script =
                 "local f = io.open('" + debugFile + "', 'w')\n" +
-                "local ui = UIMgr:GetUI('Sweater')\n" +
-                "local trade = ui and ui.handlers and ui.handlers.Trade\n" +
-                "if trade == nil or not trade.isInited then\n" +
-                "  f:write('ERROR: Trade panel not initialized - open Sweater/Trade at least once this session\\n')\n" +
-                "else\n" +
-                "  local list = trade.tradeData.GetPreBuyList()\n" +
-                "  local n = 0\n" +
-                "  for i = 1, #list do\n" +
-                "    local id = list[i].id\n" +
-                "    local info = trade.tradeData.GetTradeInfo(id)\n" +
-                "    if info and info.isFollow then\n" +
-                "      local price = math.floor((info.curPrice or 0) + 0.5)\n" +
-                "      trade.tradeMgr.SendTradeBuyItemReq(info.isNotice or false, id, " + qty + ", false, price)\n" +
-                "      f:write('requested id=' .. tostring(id) .. ' qty=" + qty + " price=' .. tostring(price) .. '\\n')\n" +
-                "      n = n + 1\n" +
-                "    end\n" +
+                "local tradeData = ModuleData.TradeData\n" +
+                "local tradeMgr = MgrMgr:GetMgr('TradeMgr')\n" +
+                "local list = tradeData.GetPreBuyList()\n" +
+                "local n = 0\n" +
+                "for i = 1, #list do\n" +
+                "  local id = list[i].id\n" +
+                "  local info = tradeData.GetTradeInfo(id)\n" +
+                "  if info and info.isFollow then\n" +
+                "    local price = math.floor((info.curPrice or 0) + 0.5)\n" +
+                "    tradeMgr.SendTradeBuyItemReq(info.isNotice or false, id, " + qty + ", false, price)\n" +
+                "    f:write('requested id=' .. tostring(id) .. ' qty=" + qty + " price=' .. tostring(price) .. '\\n')\n" +
+                "    n = n + 1\n" +
                 "  end\n" +
-                "  f:write('total requested=' .. tostring(n) .. '\\n')\n" +
                 "end\n" +
+                "f:write('total requested=' .. tostring(n) .. '\\n')\n" +
                 "f:close()\n";
 
             File.WriteAllText(debugFile, "");
@@ -423,61 +409,8 @@ namespace ROCSpeedHack
             }
 
             GUILayout.Space(8);
-            if (GUILayout.Button("Dump Item Table"))
-            {
-                runLuaFile("dumpitems.lua", Encoding.UTF8.GetString(Properties.Resources.dumpitems));
-                logger.Msg("Dumped item table to ROGHack_items.txt");
-            }
-
-            GUILayout.Space(8);
-            GUILayout.Label("Auto-Buy Shop Item");
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Item ID", GUILayout.Width(60));
-            autoBuyItemId = GUILayout.TextField(autoBuyItemId);
-            if (GUILayout.Button(showItemDropdown ? "▲" : "▼", GUILayout.Width(25)))
-            {
-                showItemDropdown = !showItemDropdown;
-            }
-            GUILayout.EndHorizontal();
-            if (showItemDropdown)
-            {
-                foreach (var item in KnownItems)
-                {
-                    if (GUILayout.Button($"{item.Name} ({item.Id})"))
-                    {
-                        autoBuyItemId = item.Id.ToString();
-                        showItemDropdown = false;
-                    }
-                }
-            }
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Min Qty", GUILayout.Width(60));
-            autoBuyMinCount = GUILayout.TextField(autoBuyMinCount);
-            GUILayout.EndHorizontal();
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Buy Qty", GUILayout.Width(60));
-            autoBuyQty = GUILayout.TextField(autoBuyQty);
-            GUILayout.EndHorizontal();
-            if (GUILayout.Button("Start Auto-Buy"))
-            {
-                StartAutoBuy(autoBuyItemId, autoBuyMinCount, autoBuyQty);
-            }
-            if (GUILayout.Button("Stop Auto-Buy"))
-            {
-                StartAutoBuy(autoBuyItemId, "0", "0");
-            }
-            if (GUILayout.Button("Debug AutoBuy"))
-            {
-                DebugAutoBuy();
-            }
             logResourceHashes = GUILayout.Toggle(logResourceHashes, "Log Resource Hashes (PropMgr search)");
             logButtonClicks = GUILayout.Toggle(logButtonClicks, "Log Button Clicks (find UI names)");
-
-            GUILayout.Space(8);
-            if (GUILayout.Button("Debug BagModel"))
-            {
-                DebugBagModel();
-            }
 
             GUILayout.Space(8);
             GUILayout.Label("Flywing Lock (auto-spam Fly Wings until target monster found)");
@@ -541,7 +474,7 @@ namespace ROCSpeedHack
 
             GUILayout.Space(8);
             GUILayout.Label("Auto-Buy Favorited Trade Cards (Sweater/Trade 'Follow' list)");
-            GUILayout.Label("Open the Trade tab at least once this session first, and star (Follow) the cards you want.");
+            GUILayout.Label("Star (Follow) the cards you want in the Trade tab first - the Trade panel does not need to stay open.");
             GUILayout.BeginHorizontal();
             GUILayout.Label("Buy Qty", GUILayout.Width(60));
             tradeFavBuyQty = GUILayout.TextField(tradeFavBuyQty);
@@ -557,78 +490,6 @@ namespace ROCSpeedHack
             }
 
             GUI.DragWindow(new Rect(0, 0, 10000, 20));
-        }
-
-        private void StartAutoBuy(string itemId, string minCount, string buyQty)
-        {
-            if (!int.TryParse(itemId, out int parsedItemId))
-            {
-                logger.Msg($"Auto-Buy: invalid item id '{itemId}'");
-                return;
-            }
-
-            int parsedMinCount = int.TryParse(minCount, out int mc) ? mc : 0;
-            int parsedBuyQty = int.TryParse(buyQty, out int bq) ? bq : 0;
-
-            // Bare "AutoBuyItem == nil" / "AutoBuyItem(...)" don't reliably see the global -
-            // this game's Lua sandbox silently drops plain global writes. autobuy.lua defines
-            // it via rawset(_G, ...), so check/invoke through rawget to match.
-            if (!File.Exists("autobuy.lua"))
-            {
-                File.WriteAllText("autobuy.lua", Encoding.UTF8.GetString(Properties.Resources.autobuy));
-            }
-            string script = File.ReadAllText("autobuy.lua");
-            File.WriteAllText("ROGHack_debug.txt", "");
-            MLuaClientHelper.DoLuaString(
-                $"if rawget(_G, 'AutoBuyItem') == nil then\n{script}\nend\n" +
-                $"rawget(_G, 'AutoBuyItem')({parsedItemId}, {parsedMinCount}, {parsedBuyQty})");
-            logger.Msg($"Auto-Buy: item {parsedItemId}, minQty {parsedMinCount}, buyQty {parsedBuyQty}");
-            if (File.Exists("ROGHack_debug.txt"))
-            {
-                foreach (var line in File.ReadAllLines("ROGHack_debug.txt"))
-                {
-                    logger.Msg("[AutoBuyDebug] " + line);
-                }
-            }
-        }
-
-        // Diagnostic helper for the "AutoBuyItem nil" bug: writes results to a file
-        // (since DoLuaString has no return value) and echoes them through the normal
-        // MelonLoader log so they can be read/copied the same way as any other log line.
-        private void DebugAutoBuy()
-        {
-            const string debugFile = "ROGHack_debug.txt";
-            const string logHelper =
-                "local function _dbglog(...) local f=io.open('" + debugFile + "','a') local p={} " +
-                "for i=1,select('#',...) do p[i]=tostring(select(i,...)) end " +
-                "f:write(table.concat(p,' ')..'\\n') f:close() end\n";
-
-            File.WriteAllText(debugFile, "");
-
-            // Confirmed by an earlier run: bare "X = value" global assignment is a no-op
-            // for later reads, even within the same chunk. These tests narrow down why,
-            // and what persistence mechanism (if any) actually survives.
-            MLuaClientHelper.DoLuaString(logHelper + "local TestBaz = 999\n_dbglog('local inline', TestBaz)");
-
-            MLuaClientHelper.DoLuaString(logHelper +
-                "rawset(_G, 'TestBar', 456)\n_dbglog('rawset inline', rawget(_G, 'TestBar'))");
-            MLuaClientHelper.DoLuaString(logHelper + "_dbglog('rawset cross-call', rawget(_G, 'TestBar'))");
-
-            MLuaClientHelper.DoLuaString(logHelper +
-                "TableUtil.__ROGHack_test = 777\n_dbglog('table field inline', TableUtil.__ROGHack_test)");
-            MLuaClientHelper.DoLuaString(logHelper + "_dbglog('table field cross-call', TableUtil.__ROGHack_test)");
-
-            if (File.Exists(debugFile))
-            {
-                foreach (var line in File.ReadAllLines(debugFile))
-                {
-                    logger.Msg("[AutoBuyDebug] " + line);
-                }
-            }
-            else
-            {
-                logger.Msg("[AutoBuyDebug] debug file was never created - io.open itself may be failing");
-            }
         }
 
         private void DrawEsp()
@@ -781,82 +642,6 @@ namespace ROCSpeedHack
             flywingLockStatus = $"Searching for '{flywingLockTargetName}'... using Fly Wings";
             MLuaClientHelper.DoLuaString(
                 $"MgrMgr:GetMgr('PropMgr').RequestUseItemByItemId({FlyWingsItemId}, false, nil)");
-        }
-
-        // Data.BagModel / item-use are Lua-only constructs with no C# footprint at all (confirmed
-        // via reflection - no BagModel/MAttrItem type exists in Il2CppMoonClient.dll), so this
-        // has to be explored empirically in Lua rather than guessed from C# signatures.
-        private void DebugBagModel()
-        {
-            const string debugFile = "ROGHack_debug.txt";
-            File.WriteAllText(debugFile, "");
-
-            string script = @"
-local f = io.open('ROGHack_debug.txt', 'a')
-local function log(...)
-   local p = {}
-   for i=1,select('#',...) do p[i]=tostring(select(i,...)) end
-   f:write(table.concat(p, ' ') .. '\n')
-end
-
-log('type(Data.BagModel)=', type(Data.BagModel))
-
-local function dumpFields(obj, prefix, depth)
-   if depth > 2 then return end
-   local ok, err = pcall(function()
-      for k, v in pairs(obj) do
-         log(prefix .. tostring(k) .. ' = ' .. tostring(v))
-         if type(v) == 'table' then
-            dumpFields(v, prefix .. tostring(k) .. '.', depth + 1)
-         end
-      end
-   end)
-   if not ok then log(prefix .. '<pairs failed: ' .. tostring(err) .. '>') end
-end
-
-dumpFields(Data.BagModel, '', 0)
-
--- probe common candidate methods for enumerating/using items
-local candidates = {
-   {'GetAllItems'}, {'GetItems'}, {'GetBagItems'}, {'GetBagItemList'},
-   {'RequestUseItem'}, {'UseItem'}, {'ReqUseItem'},
-}
-for _, c in ipairs(candidates) do
-   local name = c[1]
-   log('Data.BagModel.' .. name .. ' = ', tostring(Data.BagModel[name]))
-end
-
-local mgrNames = {'ItemMgr', 'BagMgr', 'PropMgr', 'BackpackMgr'}
-for _, name in ipairs(mgrNames) do
-   local ok, mgr = pcall(function() return MgrMgr:GetMgr(name) end)
-   log('MgrMgr:GetMgr(' .. name .. ') ok=', tostring(ok), ' value=', tostring(mgr))
-   if ok and type(mgr) == 'table' then
-      log('--- fields of ' .. name .. ' ---')
-      dumpFields(mgr, name .. '.', 0)
-      log('--- likely use-item candidates in ' .. name .. ' ---')
-      local ok2, err2 = pcall(function()
-         for k, v in pairs(mgr) do
-            local lk = string.lower(tostring(k))
-            if string.find(lk, 'use') or string.find(lk, 'consume') then
-               log(name .. '.' .. tostring(k) .. ' = ' .. tostring(v))
-            end
-         end
-      end)
-      if not ok2 then log(name .. ' <candidate scan failed: ' .. tostring(err2) .. '>') end
-   end
-end
-
-f:close()
-";
-            MLuaClientHelper.DoLuaString(script);
-
-            if (File.Exists(debugFile))
-            {
-                foreach (var line in File.ReadAllLines(debugFile))
-                {
-                    logger.Msg("[BagDebug] " + line);
-                }
-            }
         }
 
     }
