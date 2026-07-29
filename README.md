@@ -12,3 +12,11 @@ In case you want to compile it yourself. You will need to
 * build it with visual studio
 ## Other stuff
 There's also the dumpfile in the releases and forum post. Feel free to use how'd you like
+
+## Debugging / finding new hooks
+The `dump.cs` file only has method/class signatures (no logic), so figuring out what a getter/setter actually does or confirming a singleton's real accessor name means guessing from names. For that, install [UnityExplorer](https://github.com/yukieiji/UnityExplorer) (IL2CPP build) as another MelonLoader mod:
+* download the IL2CPP release DLL matching your MelonLoader version
+* drop it in the same `Mods` folder as this mod's DLL
+* launch the game — UnityExplorer adds an in-game UI with a Scene Explorer, an Object Inspector, and a C# console you can run snippets in live
+
+This lets you confirm things at runtime (e.g. `MEntityMgr.singleton`, live field values, calling a method to see what it actually does) instead of guessing from `dump.cs` alone.

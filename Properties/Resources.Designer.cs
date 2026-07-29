@@ -79,5 +79,25 @@ namespace ROCSpeedHack.Properties {
                 return ((byte[])(obj));
             }
         }
+
+        /// <summary>
+        ///   Looks up a localized resource of type System.Byte[].
+        /// </summary>
+        internal static byte[] autobuy {
+            get {
+                object obj = ResourceManager.GetObject("autobuy", resourceCulture);
+                return ((byte[])(obj));
+            }
+        }
+
+        /// <summary>
+        ///   Looks up a localized resource of type System.Byte[].
+        /// </summary>
+        internal static byte[] dumpitems {
+            get {
+                object obj = ResourceManager.GetObject("dumpitems", resourceCulture);
+                return ((byte[])(obj));
+            }
+        }
     }
 }
