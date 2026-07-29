@@ -62,6 +62,48 @@ never do `Name = ...` — use `rawset(_G, "Name", ...)` to define, `rawget(_G, "
 it back via `rawget(_G, 'AutoBuyItem')`. Plain `local` variables are unaffected and always safe
 within a single `DoLuaString` call, they just don't survive to the next call.
 
+## Workflow rule: always find the real API first, never simulate the UI
+
+When implementing a new feature or investigating "how does the client do X", **always look for
+the real underlying Lua API/manager function first** — never reach for UI simulation
+(`Button.onClick.Invoke()`, `Toggle.isOn = true`, `GameObject.Find` + click paths, etc.) as the
+first approach. Every UI-simulation attempt in this project's history has eventually failed or
+proven unreliable (timing issues, panels that auto-close on unrelated input, clicks with no
+visible effect) and was replaced by calling the real manager function directly once found. Real
+API calls are also simpler, more reliable, and don't depend on any panel being open.
+
+**How to find the real API for something the UI does:**
+1. Get any live Lua object/handle connected to the feature (e.g. `MgrMgr:GetMgr('SomeMgr')`, or a
+   UI panel instance via `UIMgr:GetUI('PanelName')`).
+2. Enumerate its function-valued fields (`pairs(obj)`, filter `type(v) == 'function'`) and run
+   `debug.getinfo(v, 'S').source` on each to get the *real compile-time source file path* of the
+   Lua module behind it — LuaJIT keeps this in every function's debug info regardless of how the
+   module was loaded.
+3. Find that exact file in the runtime-decrypted bytecode cache at
+   `D:\JoyMaker\JoyMakerGame\games\roocalive\exe\rooc_Data\StreamingAssets\Unzips\BYTES_BLOCK\*.bytesblock`
+   (each file concatenates many LuaJIT chunks back-to-back). Search for the **full unique debug
+   path string**, not a short substring — short names like a class name alone can match unrelated
+   giant registry/lookup tables that just happen to contain that word as data, not the actual
+   chunk. Bound the real chunk with proper LuaJIT header scanning (`\x1bLJ\x02` etc.), which
+   should land on a chunk in the few-KB-to-low-hundreds-of-KB range, not one spanning hundreds of
+   KB unless the module is genuinely that large.
+4. Decompile with `luajit-decompiler-v2.exe` (see below) and read the real function — this
+   reveals the actual manager/API call to make (usually a one-line dot-syntax call on a Mgr
+   singleton), the correct argument types (species ID vs. TID vs. UID all look similar but are
+   different things), and whether it's colon or dot syntax (see the Lua calling-convention note
+   below — most `ModuleMgr` functions are dot-syntax, but framework-provided OOP methods, like
+   `MSceneMgr:GetMonsIdsBySceneId`, are correctly colon-syntax).
+
+`luajit-decompiler-v2.exe` (prebuilt, from
+`https://github.com/marsinator358/luajit-decompiler-v2/releases/download/Mar_24_2024/luajit-decompiler-v2.exe`)
+is the tool: rename the extracted chunk bytes to `<name>.lua.bytes`, run
+`luajit-decompiler-v2.exe <name>.lua.bytes`, real readable source appears at
+`output/<name>.lua.lua`.
+
+Only fall back to a live in-game Lua state dump (dumping fields of a live UI panel with the
+relevant screen open) when the decompiled source alone doesn't reveal where live data comes from
+(e.g. a value populated by a server push rather than a pure client-side query).
+
 ## Feature/behavior notes
 - Damage/HP/god-mode-style cheats are **not feasible client-side** — combat is server-authoritative; client patches only affect the local display, not actual server state.
 - Same applies to `ShopMgr.RequestBuyShopItem` (used by `autobuy.lua`): the server validates proximity to
